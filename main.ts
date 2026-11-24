@@ -1,55 +1,169 @@
-import{mkdirSync,readdirSync,readFileSync,writeFileSync}from'node:fs';
-import{join}from'node:path';
-const I=process.env.MAKEFUN_INPUT_DIR??'/input',O=process.env.MAKEFUN_OUTPUT_DIR??'/output';
-const T={0:[0,0,0],1:[1,0,1],2:[4,0,1],3:[0,1,0],4:[0,1,2],5:[0,2,2],6:[0,2,3],7:[0,3,3],16:[0,2,1],17:[0,2,1],18:[0,2,1],19:[0,2,1],20:[0,2,1],21:[0,2,1],22:[0,2,1],23:[0,1,1],24:[0,2,1],25:[0,2,1],26:[0,2,1],27:[0,1,1],28:[0,2,1],29:[0,2,1],30:[0,2,1],32:[0,2,1],33:[0,2,1],34:[0,2,1],48:[2,0,0],49:[2,1,0],50:[2,1,0],51:[2,0,0],52:[0,0,0],64:[0,1,1],65:[0,2,0],80:[0,1,0],81:[0,1,0],82:[0,0,1],83:[0,1,0]};
-for(const d of readdirSync(I).sort()){
-const p=readFileSync(join(I,d,'program.bin')),q=readFileSync(join(I,d,'input.bin'));
-const D=new Int32Array(256),M=new Int32Array(256),C=new Int32Array(64),o=new Uint8Array(65536);
-let sp=0,cs=0,pc=0,st=0,ol=0,ip=0,ex=0;
-while(1){
-if(st===1e6){ex=10;break}
-if(pc<0||pc>=p.length){ex=9;break}
-const op=p[pc],t=T[op];
-if(!t){ex=5;break}
-const m=t[0];
-if(pc+m>=p.length){ex=9;break}
-st++;const x=pc+1+m;
-if(sp<t[1]){ex=2;break}
-if(sp-t[1]+t[2]>256){ex=3;break}
-pc=x;
-if(op===0){ex=0;break}
-if(op===1){D[sp++]=(p[x-1]<<24)>>24;continue}
-if(op===2){D[sp++]=p[x-4]|p[x-3]<<8|p[x-2]<<16|p[x-1]<<24;continue}
-if(op===3){sp--;continue}
-if(op===4){D[sp]=D[sp-1];sp++;continue}
-if(op===5){const a=D[sp-1];D[sp-1]=D[sp-2];D[sp-2]=a;continue}
-if(op===6){D[sp]=D[sp-2];sp++;continue}
-if(op===7){const a=D[sp-3];D[sp-3]=D[sp-2];D[sp-2]=D[sp-1];D[sp-1]=a;continue}
-if(op===23){D[sp-1]=-D[sp-1]|0;continue}
-if(op===27){D[sp-1]=~D[sp-1];continue}
-if(op===48){pc=x+((p[x-2]|p[x-1]<<8)<<16>>16);continue}
-if(op===49||op===50){const v=D[--sp],r=(p[x-2]|p[x-1]<<8)<<16>>16;if(op===49?v===0:v!==0)pc=x+r;continue}
-if(op===51){if(cs===64){ex=7;break}C[cs++]=x;pc=p[x-2]|p[x-1]<<8;continue}
-if(op===52){if(cs===0){ex=8;break}pc=C[--cs];continue}
-if(op===64){const a=D[sp-1];if(a<0||a>=256){ex=6;break}D[sp-1]=M[a];continue}
-if(op===65){const a=D[sp-1],v=D[sp-2];if(a<0||a>=256){ex=6;break}sp-=2;M[a]=v;continue}
-if(op===80){const w=String(D[sp-1]);if(ol+w.length>65536){ex=11;break}sp--;for(let i=0;i<w.length;i++)o[ol++]=w.charCodeAt(i);continue}
-if(op===81){if(ol+1>65536){ex=11;break}o[ol++]=D[--sp]&255;continue}
-if(op===82){D[sp++]=ip<q.length?q[ip++]:-1;continue}
-if(op===83){ex=D[--sp]&255;break}
-const b=D[sp-1],a=D[sp-2];let r=0;
-if(op===16)r=(a+b)|0;else if(op===17)r=(a-b)|0;else if(op===18)r=Math.imul(a,b);
-else if(op===19){if(!b){ex=4;break}r=a===-2147483648&&b===-1?a:(a/b)|0}
-else if(op===20){if(!b){ex=4;break}r=b===-1?0:a%b|0}
-else if(op===21){if(!b){ex=4;break}r=Math.floor((a>>>0)/(b>>>0))|0}
-else if(op===22){if(!b){ex=4;break}r=(a>>>0)%(b>>>0)|0}
-else if(op===24)r=a&b;else if(op===25)r=a|b;else if(op===26)r=a^b;
-else if(op===28)r=a<<(b&31);else if(op===29)r=a>>(b&31);else if(op===30)r=(a>>>(b&31))|0;
-else if(op===32)r=a===b?1:0;else if(op===33)r=a<b?1:0;else if(op===34)r=(a>>>0)<(b>>>0)?1:0;
-else{ex=5;break}
-sp-=2;D[sp++]=r;
+// Tiny stack VM entry (make.fun ISA v1; reference vm.mjs authoritative).
+// Runs each /input/<id>/program.bin, writes /output/<id>/stdout.bin + exit.txt.
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? "/input";
+const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+const STACK_MAX = 256, CALL_MAX = 64, MEM_WORDS = 256;
+const STEP_LIMIT = 1000000, OUTPUT_MAX = 65536;
+
+// Opcode table: [byte, immediate bytes, values popped, values pushed].
+const SPEC = {};
+for (const e of [[0,0,0,0],[1,1,0,1],[2,4,0,1],[3,0,1,0],[4,0,1,2],[5,0,2,2],
+[6,0,2,3],[7,0,3,3],[16,0,2,1],[17,0,2,1],[18,0,2,1],[19,0,2,1],[20,0,2,1],
+[21,0,2,1],[22,0,2,1],[23,0,1,1],[24,0,2,1],[25,0,2,1],[26,0,2,1],[27,0,1,1],
+[28,0,2,1],[29,0,2,1],[30,0,2,1],[32,0,2,1],[33,0,2,1],[34,0,2,1],[48,2,0,0],
+[49,2,1,0],[50,2,1,0],[51,2,0,0],[52,0,0,0],[64,0,1,1],[65,0,2,0],[80,0,1,0],
+[81,0,1,0],[82,0,0,1],[83,0,1,0]]) SPEC[e[0]] = e.slice(1);
+
+// Runs one program on its input; returns bytes written and exit code
+// (a trap's code when it trapped; a trapping instruction writes nothing).
+function runProgram(program, input) {
+  const stack = new Int32Array(STACK_MAX);
+  const calls = new Int32Array(CALL_MAX);
+  const mem = new Int32Array(MEM_WORDS);
+  const out = new Uint8Array(OUTPUT_MAX);
+  let sp = 0, cp = 0, pc = 0, steps = 0, outLen = 0, inPos = 0;
+  const n = program.length;
+  const done = (exit) => ({ out: out.slice(0, outLen), exit });
+
+  for (;;) {
+    // ISA step order: step limit, pc, opcode, immediate, stack needs, then
+    // the instruction's own traps.
+    if (steps === STEP_LIMIT) return done(10);
+    if (pc < 0 || pc >= n) return done(9);
+    const op = program[pc];
+    const spec = SPEC[op];
+    if (spec === undefined) return done(5);
+    const imm = spec[0];
+    if (pc + imm >= n) return done(9);
+    steps++;
+    const next = pc + 1 + imm;
+    if (sp < spec[1]) return done(2);
+    if (sp - spec[1] + spec[2] > STACK_MAX) return done(3);
+    pc = next;
+
+    if (op === 0x00) return done(0);
+    if (op === 0x01) { // PUSH8: byte as signed 8-bit, sign-extended
+      stack[sp++] = (program[next - 1] << 24) >> 24;
+      continue;
+    }
+    if (op === 0x02) { // PUSH32: four little-endian bytes, signed 32-bit
+      stack[sp++] = program[next - 4] | (program[next - 3] << 8) |
+        (program[next - 2] << 16) | (program[next - 1] << 24);
+      continue;
+    }
+    if (op === 0x03) { sp--; continue; }
+    if (op === 0x04) { stack[sp] = stack[sp - 1]; sp++; continue; }
+    if (op === 0x05) {
+      const t = stack[sp - 1];
+      stack[sp - 1] = stack[sp - 2];
+      stack[sp - 2] = t;
+      continue;
+    }
+    if (op === 0x06) { stack[sp] = stack[sp - 2]; sp++; continue; }
+    if (op === 0x07) {
+      const a = stack[sp - 3];
+      stack[sp - 3] = stack[sp - 2];
+      stack[sp - 2] = stack[sp - 1];
+      stack[sp - 1] = a;
+      continue;
+    }
+    if (op === 0x17) { stack[sp - 1] = -stack[sp - 1] | 0; continue; }
+    if (op === 0x1b) { stack[sp - 1] = ~stack[sp - 1]; continue; }
+    if (op === 0x30 || op === 0x31 || op === 0x32) {
+      // JMP/JZ/JNZ: signed 16-bit LE offset from the next instruction.
+      // Target unchecked here; out of range traps 9 at the next step.
+      const rel = ((program[next - 2] | (program[next - 1] << 8)) << 16) >> 16;
+      let take = true;
+      if (op !== 0x30) {
+        const v = stack[--sp];
+        take = op === 0x31 ? v === 0 : v !== 0;
+      }
+      if (take) pc = next + rel;
+      continue;
+    }
+    if (op === 0x33) { // CALL: 64 held already traps 7
+      if (cp === CALL_MAX) return done(7);
+      calls[cp++] = next;
+      pc = program[next - 2] | (program[next - 1] << 8);
+      continue;
+    }
+    if (op === 0x34) { // RET: empty call stack traps 8
+      if (cp === 0) return done(8);
+      pc = calls[--cp];
+      continue;
+    }
+    if (op === 0x40) { // LOAD: address outside 0..255 traps 6
+      const addr = stack[sp - 1];
+      if (addr < 0 || addr >= MEM_WORDS) return done(6);
+      stack[sp - 1] = mem[addr];
+      continue;
+    }
+    if (op === 0x41) { // STORE ( v addr -- ): address outside 0..255 traps 6
+      const addr = stack[sp - 1], v = stack[sp - 2];
+      if (addr < 0 || addr >= MEM_WORDS) return done(6);
+      sp -= 2;
+      mem[addr] = v;
+      continue;
+    }
+    if (op === 0x50) { // PRINT: decimal ASCII; over the limit writes nothing
+      const text = String(stack[sp - 1]);
+      if (outLen + text.length > OUTPUT_MAX) return done(11);
+      sp--;
+      for (let i = 0; i < text.length; i++) out[outLen++] = text.charCodeAt(i);
+      continue;
+    }
+    if (op === 0x51) { // PUTC: one byte, the low byte of the value
+      if (outLen + 1 > OUTPUT_MAX) return done(11);
+      out[outLen++] = stack[--sp] & 255;
+      continue;
+    }
+    if (op === 0x52) { // IN: next byte, or -1 once the input is used up
+      stack[sp++] = inPos < input.length ? input[inPos++] : -1;
+      continue;
+    }
+    if (op === 0x53) return done(stack[--sp] & 255);
+    // Two-operand ops: b is the top, a below it.
+    const b = stack[sp - 1], a = stack[sp - 2];
+    let r;
+    if (op === 0x10) r = (a + b) | 0; // ADD wraps
+    else if (op === 0x11) r = (a - b) | 0; // SUB wraps
+    else if (op === 0x12) r = Math.imul(a, b); // MUL: low 32 bits
+    else if (op === 0x13) {
+      if (b === 0) return done(4);
+      r = a === -2147483648 && b === -1 ? a : (a / b) | 0; // INT_MIN/-1 = INT_MIN
+    } else if (op === 0x14) {
+      if (b === 0) return done(4);
+      r = b === -1 ? 0 : (a % b) | 0; // remainder takes the sign of a
+    } else if (op === 0x15) {
+      if (b === 0) return done(4);
+      r = Math.floor((a >>> 0) / (b >>> 0)) | 0; // DIVU: unsigned quotient
+    } else if (op === 0x16) {
+      if (b === 0) return done(4);
+      r = ((a >>> 0) % (b >>> 0)) | 0; // MODU: unsigned remainder
+    } else if (op === 0x18) r = a & b;
+    else if (op === 0x19) r = a | b;
+    else if (op === 0x1a) r = a ^ b;
+    else if (op === 0x1c) r = a << (b & 31); // SHL: only low 5 bits count
+    else if (op === 0x1d) r = a >> (b & 31); // SHR: arithmetic
+    else if (op === 0x1e) r = (a >>> (b & 31)) | 0; // SHRU: logical
+    else if (op === 0x20) r = a === b ? 1 : 0;
+    else if (op === 0x21) r = a < b ? 1 : 0; // signed
+    else if (op === 0x22) r = (a >>> 0) < (b >>> 0) ? 1 : 0; // unsigned
+    else return done(5); // unreachable: SPEC already rejected unknown bytes
+    sp -= 2;
+    stack[sp++] = r;
+  }
 }
-mkdirSync(join(O,d),{recursive:true});
-writeFileSync(join(O,d,'stdout.bin'),o.slice(0,ol));
-writeFileSync(join(O,d,'exit.txt'),ex+'\n');
+
+// One instance per directory under the input directory.
+for (const id of readdirSync(INPUT_DIR).sort()) {
+  const program = readFileSync(join(INPUT_DIR, id, "program.bin"));
+  const input = readFileSync(join(INPUT_DIR, id, "input.bin"));
+  const { out, exit } = runProgram(program, input);
+  mkdirSync(join(OUTPUT_DIR, id), { recursive: true });
+  writeFileSync(join(OUTPUT_DIR, id, "stdout.bin"), out);
+  writeFileSync(join(OUTPUT_DIR, id, "exit.txt"), exit + "\n");
 }
